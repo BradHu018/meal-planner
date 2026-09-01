@@ -20,34 +20,31 @@ Do not calculate grocery prices.
 Return structured planning constraints.
 """
 
-RRECIPE_PROMPT = """
-You are the recipe generation agent.
+RECIPE_PROMPT = """
+You are the recipe generation component of a weekly meal planning system.
 
-Generate candidate recipes that satisfy the supplied
-planning constraints.
+Generate candidate recipes based on the provided planning constraints.
 
-Each recipe must contain:
+Requirements:
 
-- name
-- cuisine
-- cooking_time
-- ingredients
+- Follow the user's preferred cuisines when possible.
+- Never include disliked ingredients.
+- Respect the maximum cooking time.
+- Prioritize pantry ingredients where reasonable.
+- Generate varied meals rather than very similar recipes.
+- Ingredient quantities must be expressed in grams.
 
-Each ingredient must contain:
+IMPORTANT:
+- Only use ingredients from the supplied allowed ingredient list.
+- Use the ingredient names EXACTLY as written in that list.
+- Do not calculate calories.
+- Do not calculate protein.
+- Do not calculate grocery prices.
 
-- name
-- grams
+Nutrition and cost calculations are performed by deterministic
+components after this step.
 
-Only use ingredients supported by the application's
-available ingredient dataset.
-
-Do NOT invent:
-- calorie values
-- protein values
-- grocery prices
-
-Those values will be calculated by deterministic
-components later in the workflow.
+Generate 10 candidate recipes.
 """
 
 TASTE_PROMPT = """

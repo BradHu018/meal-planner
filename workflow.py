@@ -1,5 +1,7 @@
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
+from data.nutrition import NUTRITION_DATA
+from data.prices import PRICE_DATA
 
 from data.nutrition import (
     calculate_recipe_nutrition,
@@ -7,6 +9,31 @@ from data.nutrition import (
 )
 
 from data.prices import calculate_recipe_cost
+from pydantic import BaseModel, Field 
+from langchain.chat_models import init_chat_model
+from dotenv import load_dotenv 
+from langchain_core.messages import SystemMessage, HumanMessage
+from prompts import RECIPE_PROMPT, TASTE_PROMPT, BALANCE_PROMPT, OPTIMIZER_PROMPT
+
+load_dotenv()
+
+class Ingredient(BaseModel):
+    name: str = Field(
+        description = "ingredient name exactly as provided in the allowed ingredient list."
+    )
+    grams: float = Field(
+        gt=0, 
+        description="Amount of the ingredient in grams"
+    )
+
+class Recipe(BaseModel):
+    name: str 
+    cuisine: str 
+    cooking_time: int 
+    ingredients: list[Ingredient]
+
+class RecipeList(BaseModel):
+    recipes: list[Recipe]
 
 # STATE
 class MealPlanState(TypedDict):
@@ -15,7 +42,7 @@ class MealPlanState(TypedDict):
     preferences: dict
     pantry: list[str]
     weekly_budget: float
-    nutrion_goals: dict 
+    nutrition_goals: dict 
 
 
     # planner
@@ -82,20 +109,43 @@ def recipe_generator_node(state: MealPlanState):
 
     constraints = state["planning_constraints"]
 
-    # TODO:
-    # call LLM with RECIPE_PROMPT
-    #
-    # Generate ~10-15 recipes.
-    #
-    # IMPORTANT:
-    # ingredients should have:
-    #
-    # {
-    #     "name": "...",
-    #     "grams": ...
-    # }
+    model = init_chat_model("google_genai:gemini-3.6-flash")
 
-    recipes = []
+    recipe_model = model.with_structured_output(RecipeList)
+
+    SUPPORTED_INGREDIENTS = sorted(
+        set(NUTRITION_DATA.keys())
+        & set(PRICE_DATA.keys())
+    )
+
+    response = recipe_model.invoke([
+        SystemMessage(content=RECIPE_PROMPT
+    ),
+        HumanMessage(
+            content=f"""
+Planning constraints: 
+{constraints}
+
+Allowed ingredients:
+
+{SUPPORTED_INGREDIENTS}
+
+Generate 10 candidate recipes using only these allowed ingredients
+"""
+        )
+    ])
+
+    recipes = [
+        recipe.model_dump() 
+        for recipe in response.recipes
+    ]
+
+    print("\n GENERATED RECIPES")
+
+    for recipe in recipes:
+        print(recipe["name"])
+        print(recipe["ingredients"])
+        print()
 
     return {
         "candidate_recipes": recipes

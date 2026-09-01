@@ -1,24 +1,49 @@
-NUTRITION_DATA = {
-    "chicken breast": {
-        "calories_per_100g": 165,
-        "protein_per_100g": 31,
-    },
+import pandas as pd 
 
-    "rice": {
-        "calories_per_100g": 130,
-        "protein_per_100g": 2.7,
-    },
+food_df = pd.read_csv("data/cnf/food_name.csv")
+nutrient_name_df = pd.read_csv("data/cnf/nutrient_name.csv")
+nutrient_amount_df = pd.read_csv("data/cnf/nutrient_amount.csv")
 
-    "broccoli": {
-        "calories_per_100g": 35,
-        "protein_per_100g": 2.4,
-    },
+PROTEIN_CODE = 203 
+CALORIE_CODE = 208
 
-    "tofu": {
-        "calories_per_100g": 144,
-        "protein_per_100g": 17,
-    },
-}
+
+# print("FOOD COLUMNS: ")
+# print(food_df.columns)
+
+# print("\nNUTRIENT NAME COLUMNS:")
+# print(nutrient_name_df.columns)
+
+# print("\nNUTRIENT AMOUNT COLUMNS:")
+# print(nutrient_amount_df.columns)
+
+# print("\nFOOD SAMPLE:")
+# print(food_df.head())
+
+# print("\nNUTRIENT SAMPLE:")
+# print(nutrient_name_df.head())
+
+# NUTRITION_DATA = {
+#     "chicken breast": {
+#         "calories_per_100g": 165,
+#         "protein_per_100g": 31,
+#     },
+
+#     "rice": {
+#         "calories_per_100g": 130,
+#         "protein_per_100g": 2.7,
+#     },
+
+#     "broccoli": {
+#         "calories_per_100g": 35,
+#         "protein_per_100g": 2.4,
+#     },
+
+#     "tofu": {
+#         "calories_per_100g": 144,
+#         "protein_per_100g": 17,
+#     },
+# }
 
 def get_nutrition(food_name):
     return NUTRITION_DATA.get(food_name)
