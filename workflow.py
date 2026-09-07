@@ -1,14 +1,12 @@
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
-from data.nutrition import NUTRITION_DATA
-from data.prices import PRICE_DATA
 
 from data.nutrition import (
     calculate_recipe_nutrition,
     scale_recipe_to_targets,
 )
-
 from data.prices import calculate_recipe_cost
+
 from pydantic import BaseModel, Field 
 from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv 
@@ -19,10 +17,16 @@ load_dotenv()
 
 class Ingredient(BaseModel):
     name: str = Field(
-        description = "ingredient name exactly as provided in the allowed ingredient list."
+        description=(
+            "A clear common ingredient name. "
+            "Include preparation details when useful, "
+            "for example 'white rice cooked' or "
+            "'grilled chicken breast'."
+        )
     )
+
     grams: float = Field(
-        gt=0, 
+        gt=0,
         description="Amount of the ingredient in grams"
     )
 
@@ -109,47 +113,45 @@ def recipe_generator_node(state: MealPlanState):
 
     constraints = state["planning_constraints"]
 
-    model = init_chat_model("google_genai:gemini-3.6-flash")
+    model = init_chat_model(
+        "google_genai:gemini-3.6-flash"
+    )
 
-    recipe_model = model.with_structured_output(RecipeList)
-
-    SUPPORTED_INGREDIENTS = sorted(
-        set(NUTRITION_DATA.keys())
-        & set(PRICE_DATA.keys())
+    recipe_model = model.with_structured_output(
+        RecipeList
     )
 
     response = recipe_model.invoke([
-        SystemMessage(content=RECIPE_PROMPT
-    ),
+        SystemMessage(
+            content=RECIPE_PROMPT
+        ),
+
         HumanMessage(
             content=f"""
-Planning constraints: 
+Planning constraints:
+
 {constraints}
 
-Allowed ingredients:
+Generate 10 candidate recipes.
 
-{SUPPORTED_INGREDIENTS}
+Use common grocery ingredients and use clear,
+specific ingredient names so they can be matched
+against nutrition and grocery datasets.
 
-Generate 10 candidate recipes using only these allowed ingredients
+All ingredient quantities must be in grams.
 """
         )
     ])
 
     recipes = [
-        recipe.model_dump() 
+        recipe.model_dump()
         for recipe in response.recipes
     ]
-
-    print("\n GENERATED RECIPES")
-
-    for recipe in recipes:
-        print(recipe["name"])
-        print(recipe["ingredients"])
-        print()
 
     return {
         "candidate_recipes": recipes
     }
+
 
 # adds the calories and proteins to the generated recipe 
 def nutrition_enrichment_node(state: MealPlanState):
@@ -169,6 +171,7 @@ def nutrition_enrichment_node(state: MealPlanState):
         "enriched_recipes": enriched
     }
 
+# adjust recipe ingredient quantities to meet the nutrition goals
 def portion_calculator_node(state: MealPlanState):
     target_calories = (
         state["nutrition_goals"]["meal_calories"]
@@ -389,9 +392,10 @@ builder.add_edge("portion_calculator", "budget")
 builder.add_edge("portion_calculator", "balance")
 
 # join
-builder.add_edge("taste", "optimizer")
-builder.add_edge("budget", "optimizer")
-builder.add_edge("balance", "optimizer")
+builder.add_edge(
+    ["taste", "budget", "balance"],
+    "optimizer"
+)
 
 builder.add_edge("optimizer", "critic")
 
