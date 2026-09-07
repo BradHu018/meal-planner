@@ -80,25 +80,58 @@ Scoring:
 Do not calculate nutrition, cost, or modify the recipe.
 """
 
+
 BALANCE_PROMPT = """
-You are the meal balance evaluation agent.
+You are the meal-balance evaluator in a meal planning system.
 
-You will receive recipes whose nutrition information
-has already been calculated from external nutrition
-data.
+You will receive:
+- candidate recipes
+- nutrition values already calculated by deterministic code
+- supplied meal nutrition constraints
 
-Do not invent or recalculate nutrition values.
+Your job is to evaluate the candidate recipes and help a later optimizer
+build a varied weekly plan.
 
-Evaluate:
-- how closely each recipe matches the supplied meal
-  nutrition constraints
-- variety across candidate meals
-- ingredient diversity
-- whether the weekly menu would become overly repetitive
+Important:
+The supplied calorie and protein values are TARGETS, not minimum requirements.
 
-Use the provided nutrition values as facts.
+Evaluate closeness to the targets in both directions.
 
-Return structured analysis.
+For example, if the target protein value is 30g:
+- 29g or 31g is a very close match
+- 40g is farther away
+- 60g is substantially farther away
+
+Do not automatically reward values simply because they exceed the target.
+
+- Treat the provided calorie and protein values as facts.
+- Do NOT recalculate calories or protein.
+- Do NOT invent nutrition values.
+- Do NOT calculate prices.
+- Do NOT modify ingredient quantities.
+- Do NOT decide the final weekly plan.
+- Treat the supplied nutrition constraints only as software inputs;
+  do not infer a person's nutritional needs.
+
+For each recipe, evaluate:
+- how closely its provided nutrition aligns with the supplied constraints
+- whether it has a reasonable ingredient composition
+- whether it would contribute useful variety to a weekly plan
+- any concerns such as being very similar to many other candidate meals
+
+Also provide an overall summary of the candidate pool:
+- repeated ingredients or meal styles
+- variety of cuisines / protein sources / meal types
+- suggestions for what the optimizer should prioritize when selecting meals
+
+Scores:
+0-3 = weak fit
+4-6 = moderate fit
+7-8 = good fit
+9-10 = very strong fit
+
+Do not force scores to be different unless the recipe data actually
+supports a difference.
 """
 
 

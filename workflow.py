@@ -65,6 +65,45 @@ class TasteEvaluation(BaseModel):
 class TasteAnalysis(BaseModel):
     evaluations: list[TasteEvaluation]
 
+class BalanceEvaluation(BaseModel):
+    recipe_name: str = Field(
+        description="Exact name of the recipe being evaluated."
+    )
+
+    score: float = Field(
+        ge=0,
+        le=10,
+        description="Meal balance score from 0 to 10."
+    )
+
+    reasoning: str = Field(
+        description="Short explanation of why this recipe received the score"
+    )
+
+    strenghts: list[str] = Field(
+        description="Positive qualities of this recipe for the weekly meal plan."
+    )
+
+    concerns: list[str] = Field(
+        description="Potential balance or repetition concerns."
+    )
+
+
+class BalanceAnalysis(BaseModel):
+    evaluations: list[BalanceEvaluation]
+
+    overall_summary: str = Field(
+        description="Overall summary of the candidate recipe pool."
+    )
+
+    repetition_concerns: list[str] = Field(
+        description="Ingredeints, protein sources, cuisines, or meal styles that repeats often"
+    )
+
+    optimizer_suggestions: list[str] = Field(
+        description="Suggestions to help the optimizer choosea variety set of meals."
+    )
+
 
 
 # STATE
@@ -298,24 +337,68 @@ def budget_agent(state: MealPlanState):
         }
     }
 
+# balance meal based on reptition and variety of ingredients, cuisines, and protein sources
 def meal_balance_agent(state: MealPlanState):
-    recipes = state["portioned_recipes"]
 
+    recipes = state["portioned_recipes"]
     goals = state["nutrition_goals"]
 
-    # LLM gets:
-    #
-    # recipe nutrition
-    # supplied goals
-    # recipe ingredients
-    #
-    # and evaluates the meal options
+    model = init_chat_model(
+        "google_genai:gemini-3.6-flash"
+    )
+
+    balance_model = model.with_structured_output(
+        BalanceAnalysis
+    )
+
+    response = balance_model.invoke([
+        SystemMessage(
+            content=BALANCE_PROMPT
+        ),
+
+        HumanMessage(
+            content=f"""
+Supplied meal constraints:
+
+{goals}
+
+
+Candidate recipes with already-calculated nutrition:
+
+{recipes}
+
+
+Evaluate every recipe exactly once.
+
+Use the exact recipe names provided.
+
+Also evaluate the candidate pool as a whole for
+repetition and variety so the optimizer can later
+select a balanced set of meals.
+"""
+        )
+    ])
+
+    print("\n=== BALANCE ANALYSIS ===")
+
+    for evaluation in response.evaluations:
+
+        print(
+            evaluation.recipe_name,
+            "->",
+            evaluation.score
+        )
+
+        print(evaluation.reasoning)
+        print()
+
+    print("OVERALL:")
+    print(response.overall_summary)
 
     return {
-        "balance_analysis": {}
+        "balance_analysis":
+            response.model_dump()
     }
-
-
 
 def optimizer_node(state: MealPlanState):
       # Reads:
