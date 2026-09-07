@@ -39,6 +39,34 @@ class Recipe(BaseModel):
 class RecipeList(BaseModel):
     recipes: list[Recipe]
 
+class TasteEvaluation(BaseModel):
+    recipe_name: str = Field(
+        description="Exact name of the recipe being evaluated."
+    )
+
+    score: float = Field(
+        ge=0,
+        le=10,
+        description="Taste compatibility score from 0 to 10."
+    )
+
+    reasoning: str = Field(
+        description="Short explanation of why this recipe received the score"
+    )
+
+    matched_preferences: list[str] = Field(
+        description="User preferences that this recipe matches."
+    )
+
+    concerns: list[str] = Field(
+        description="Taste-related concerns or preference mismatches."
+    )
+
+class TasteAnalysis(BaseModel):
+    evaluations: list[TasteEvaluation]
+
+
+
 # STATE
 class MealPlanState(TypedDict):
 
@@ -194,15 +222,59 @@ def portion_calculator_node(state: MealPlanState):
     return {
         "portioned_recipes": portioned
     }
-    
 
+# evaluate the taste of the generated recipe based on user preferences and disliked foods
 def taste_agent(state: MealPlanState):
-    recipes = state["portioned_recipes"]
 
-    # LLM analyzes taste compatability 
-    
+    recipes = state["portioned_recipes"]
+    preferences = state["preferences"]
+
+    model = init_chat_model(
+        "google_genai:gemini-3.6-flash"
+    )
+
+    taste_model = model.with_structured_output(
+        TasteAnalysis
+    )
+
+    response = taste_model.invoke([
+        SystemMessage(
+            content=TASTE_PROMPT
+        ),
+
+        HumanMessage(
+            content=f"""
+User preferences:
+
+{preferences}
+
+Candidate recipes:
+
+{recipes}
+
+Evaluate every candidate recipe for taste compatibility.
+
+Make sure every recipe receives exactly one evaluation.
+Use the exact recipe name provided in the candidate recipe data.
+"""
+        )
+    ])
+
+    print("\n=== TASTE ANALYSIS ===")
+
+    for evaluation in response.evaluations:
+        print(
+            evaluation.recipe_name,
+            "->",
+            evaluation.score
+        )
+
+        print(evaluation.reasoning)
+        print()
+
     return {
-        "taste_analysis": {}
+        "taste_analysis":
+            response.model_dump()
     }
 
 # calculate real cost based on the adjusted ingredient quantities

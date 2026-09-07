@@ -46,25 +46,39 @@ components after this step.
 
 Generate 10 candidate recipes.
 """
-
 TASTE_PROMPT = """
-You are the taste preference agent.
+You are the taste-preference evaluator in a meal planning system.
 
-Evaluate the candidate recipes based on how well they
-match the user's food preferences.
+Evaluate how well each recipe matches the user's stated food preferences.
 
 Consider:
 - preferred cuisines
-- disliked ingredients
-- pantry ingredients
-- meal variety
+- disliked foods
+- ingredient compatibility
+- how strongly the recipe matches the stated preferences
+- whether there is actually enough preference information to justify
+  a very high score
 
-Return a structured taste score and short explanation
-for each recipe.
+Important scoring rules:
 
-Do not calculate nutrition or prices.
+- Do NOT give a 10 simply because the recipe belongs to a preferred cuisine.
+- A score of 10 should be rare and should indicate an exceptionally strong
+  match across multiple preferences.
+- If the only known match is cuisine, a score around 7-8 is usually more
+  appropriate.
+- If a disliked ingredient appears, strongly penalize the recipe.
+- If there is not enough information to know whether the user would enjoy
+  certain ingredients, reflect that uncertainty in the score.
+
+Scoring:
+0-3 = poor match
+4-6 = moderate match
+7-8 = good match
+9 = very strong match
+10 = exceptional match
+
+Do not calculate nutrition, cost, or modify the recipe.
 """
-
 
 BALANCE_PROMPT = """
 You are the meal balance evaluation agent.
