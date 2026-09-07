@@ -105,6 +105,24 @@ class BalanceAnalysis(BaseModel):
     )
 
 
+class SelectedMeal(BaseModel):
+    recipe_name: str = Field(
+        description="Exact name of a selected candidate recipe."
+    )
+
+    reason: str = Field(
+        description="Short explanation of why this recipe was selected."
+    )
+
+class OptimizerSelection(BaseModel):
+    selected_meals: list[SelectedMeal] = Field(
+        description="Recipes selected for the weekly meal plan."
+    )
+
+    reasoning: str = Field(
+        description="Short explanation of how the plan balances taste, cost, variety, and meal balance."
+    )
+
 
 # STATE
 class MealPlanState(TypedDict):
@@ -400,20 +418,227 @@ select a balanced set of meals.
             response.model_dump()
     }
 
+
+# builds a grocery list based on the selected recipes and the user's pantry
+def build_grocery_list(selected_recipes, pantry):
+    grocery_totals = {}
+
+    pantry_normalized = {
+        item.lower().strip()
+        for item in pantry
+    }
+
+    for recipe in selected_recipes:
+
+        for ingredient in recipe["ingredients"]:
+            name = ingredient["name"]
+            grams = ingredient["grams"]
+
+            normalized_name = name.lower().strip()
+
+            # v0.1 assumption:
+            # if ingredient is in pantry, we do not purchase it
+            if normalized_name in pantry_normalized:
+                continue
+
+            if normalized_name not in grocery_totals:
+                grocery_totals[normalized_name] = {
+                    "name": name,
+                    "grams": 0
+                }
+
+            grocery_totals[normalized_name]["grams"] += grams
+
+    grocery_list = []
+
+    for ingredient in grocery_totals.values():
+        grocery_list.append({
+            "name": ingredient["name"],
+            "grams": round(
+                ingredient["grams"],
+                1
+            )
+        })
+
+    return grocery_list
+
+
+# calculate the total cost of the weekly recipe
+def calculate_selected_total(
+    selected_recipes,
+    budget_analysis
+):
+    recipe_costs = budget_analysis[
+        "recipe_cost"
+    ]
+
+    total = 0
+
+    for recipe in selected_recipes:
+        recipe_name = recipe["name"]
+
+        cost_info = recipe_costs.get(
+            recipe_name
+        )
+
+        if cost_info is None:
+            continue
+
+        total += cost_info[
+            "estimated_cost"
+        ]
+
+    return round(total, 2)
+
+# optimizes the weekly recipes based on the taste, cost, and balance analysis
 def optimizer_node(state: MealPlanState):
-      # Reads:
+
+    recipes = state["portioned_recipes"]
+
+    taste_analysis = state[
+        "taste_analysis"
+    ]
+
+    budget_analysis = state[
+        "budget_analysis"
+    ]
+
+    balance_analysis = state[
+        "balance_analysis"
+    ]
+
+    meals_needed = state[
+        "preferences"
+    ]["meals_needed"]
+
+    weekly_budget = state[
+        "weekly_budget"
+    ]
+
+    model = init_chat_model(
+        "google_genai:gemini-3.6-flash"
+    )
+
+    optimizer_model = (
+        model.with_structured_output(
+            OptimizerSelection
+        )
+    )
+
+    response = optimizer_model.invoke([
+        SystemMessage(
+            content=OPTIMIZER_PROMPT
+        ),
+
+        HumanMessage(
+            content=f"""
+Number of meals required:
+{meals_needed}
+
+Weekly budget:
+{weekly_budget}
+
+
+Candidate recipes:
+
+{recipes}
+
+
+Taste analysis:
+
+{taste_analysis}
+
+
+Budget analysis:
+
+{budget_analysis}
+
+
+Balance analysis:
+
+{balance_analysis}
+
+
+Select exactly {meals_needed} unique recipes.
+
+Use only exact recipe names from the candidate recipe list.
+"""
+        )
+    ])
+
+    selected_names = [
+        meal.recipe_name
+        for meal in response.selected_meals
+    ]
+
+    print(
+        "\n=== OPTIMIZER SELECTION ==="
+    )
+
+    for meal in response.selected_meals:
+        print(
+            meal.recipe_name,
+            "->",
+            meal.reason
+        )
+
+    # Create lookup table:
     #
-    # portioned_recipes
-    # taste_analysis
-    # budget_analysis
-    # balance_analysis
-    #
-    # LLM selects meals.
+    # recipe name -> complete recipe dict
+    recipe_lookup = {
+        recipe["name"]: recipe
+        for recipe in recipes
+    }
+
+    selected_recipes = []
+
+    for name in selected_names:
+
+        if name not in recipe_lookup:
+            continue
+
+        selected_recipes.append(
+            recipe_lookup[name]
+        )
+
+    # Safety check:
+    # Gemini must return exactly the requested
+    # number of valid recipes.
+    if len(selected_recipes) != meals_needed:
+        raise ValueError(
+            f"Optimizer selected "
+            f"{len(selected_recipes)} valid meals, "
+            f"but {meals_needed} were required."
+        )
+
+    grocery_list = build_grocery_list(
+        selected_recipes,
+        state["pantry"]
+    )
+
+    estimated_total = (
+        calculate_selected_total(
+            selected_recipes,
+            budget_analysis
+        )
+    )
+
+    weekly_plan = []
+
+    for index, recipe in enumerate(
+        selected_recipes,
+        start=1
+    ):
+        weekly_plan.append({
+            "meal_number": index,
+            **recipe
+        })
 
     return {
-        "weekly_plan": [],
-        "grocery_list": [],
-        "estimated_total": 0
+        "weekly_plan": weekly_plan,
+        "grocery_list": grocery_list,
+        "estimated_total":
+            estimated_total
     }
 
 

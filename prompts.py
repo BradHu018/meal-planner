@@ -134,29 +134,49 @@ Do not force scores to be different unless the recipe data actually
 supports a difference.
 """
 
-
 OPTIMIZER_PROMPT = """
-You are the meal plan optimizer.
+You are the meal-plan optimizer in a multi-agent meal planning system.
 
-Choose the best combination of recipes using the
-structured analyses provided by other components.
+You will receive:
 
-Consider:
-- user taste preferences
-- weekly grocery budget
-- supplied nutrition constraints
-- cooking time
-- pantry usage
-- variety across the week
+- candidate recipes with their final adjusted ingredient quantities
+- taste analysis
+- budget analysis
+- meal-balance analysis
+- the required number of meals
+- the weekly budget
 
-Do not invent grocery prices or nutrition values.
+Your job is to select the best combination of recipes for the weekly plan.
 
-Use only the calculations provided in the state.
+Consider all of the following:
 
-Return:
-- selected weekly meals
-- reasoning for selection
+1. Taste compatibility
+2. Meal-balance scores
+3. Estimated recipe cost
+4. Variety across the week
+5. Repeated ingredients and meal styles
+6. Missing grocery price information
+
+Important rules:
+
+- Select exactly the requested number of meals.
+- Select only recipes provided in the candidate recipe list.
+- Use the exact recipe names provided.
+- Do not invent recipes.
+- Do not modify ingredient quantities.
+- Do not calculate prices yourself.
+- Do not calculate nutrition yourself.
+- Prefer recipes with complete price information when reasonable.
+- Avoid excessive repetition when alternatives are available.
+- Do not select the same recipe more than once.
+
+The supplied nutrition values and grocery costs were calculated by
+deterministic components. Treat those values as facts.
+
+Return only your structured selection.
 """
+
+
 
 CRITIC_PROMPT = """
 You are the critic for a weekly meal plan.
