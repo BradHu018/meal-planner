@@ -182,6 +182,27 @@ class CriticReview(BaseModel):
         )
     )
 
+class RevisionSelection(BaseModel):
+    selected_recipe_names: list[str] = Field(
+        description=(
+            "Exact names of the recipes selected for the revised weekly plan."
+        )
+    )
+
+    changes_made: list[str] = Field(
+        description=(
+            "Short descriptions of which meals were replaced and why"
+        )
+    )
+
+    reasoning: str = Field(
+        description=(
+            "Breif explanation of how the revised selection addresses the critic feedback"
+        )
+    )
+
+
+
 # STATE
 class MealPlanState(TypedDict):
 
@@ -1002,18 +1023,198 @@ Do not suggest:
 
 def revision_node(state: MealPlanState):
 
-    # LLM receives:
-    #
-    # existing plan
-    # candidate recipes
-    # critic feedback
-    #
-    # Then substitutes recipes.
+    current_plan = state["weekly_plan"]
+    candidate_recipes = state["portioned_recipes"]
+
+    critic_feedback = state["critic_feedback"]
+
+    meals_needed = (
+        state["preferences"]["meals_needed"]
+    )
+
+    weekly_budget = state["weekly_budget"]
+
+    model = init_chat_model(
+        MODEL_NAME
+    )
+
+    revision_model = model.with_structured_output(
+        RevisionSelection
+    )
+
+    response = invoke_with_retry(
+        revision_model,
+        [
+            SystemMessage(
+                content=REVISION_PROMPT
+            ),
+
+            HumanMessage(
+                content=f"""
+Current weekly plan:
+
+{current_plan}
+
+
+Critic feedback:
+
+{critic_feedback}
+
+
+Required number of meals:
+
+{meals_needed}
+
+
+Weekly budget:
+
+{weekly_budget}
+
+
+Available candidate recipes:
+
+{candidate_recipes}
+
+
+Taste analysis:
+
+{state["taste_analysis"]}
+
+
+Balance analysis:
+
+{state["balance_analysis"]}
+
+
+Budget analysis:
+
+{state["budget_analysis"]}
+
+
+Revise the current meal selection using only
+the available candidate recipes.
+
+Preserve as many good existing selections as possible.
+
+Return exactly {meals_needed} unique recipe names.
+"""
+            )
+        ]
+    )
+
+    # ================================
+    # Debug output
+    # ================================
+
+    print("\n=== REVISION ===")
+
+    print("\nCritic feedback:")
+    print(critic_feedback)
+
+    print("\nChanges made:")
+
+    for change in response.changes_made:
+        print("-", change)
+
+    print("\nReasoning:")
+    print(response.reasoning)
+
+    print("\nRevised recipes:")
+
+    for name in response.selected_recipe_names:
+        print("-", name)
+
+    # ================================
+    # Build recipe lookup
+    # ================================
+
+    recipe_lookup = {
+        recipe["name"]: recipe
+        for recipe in candidate_recipes
+    }
+
+    # ================================
+    # Validate Gemini selection
+    # ================================
+
+    selected_recipes = []
+
+    seen = set()
+
+    for name in response.selected_recipe_names:
+
+        # Gemini returned an unknown recipe
+        if name not in recipe_lookup:
+            continue
+
+        # Gemini returned a duplicate
+        if name in seen:
+            continue
+
+        seen.add(name)
+
+        selected_recipes.append(
+            recipe_lookup[name]
+        )
+
+    # Revision must still produce
+    # exactly the required number of meals
+    if len(selected_recipes) != meals_needed:
+
+        raise ValueError(
+            f"Revision selected "
+            f"{len(selected_recipes)} valid unique meals, "
+            f"but {meals_needed} were required."
+        )
+
+    # ================================
+    # Rebuild weekly plan
+    # ================================
+
+    weekly_plan = []
+
+    for index, recipe in enumerate(
+        selected_recipes,
+        start=1
+    ):
+
+        weekly_plan.append({
+            "meal_number": index,
+            **recipe
+        })
+
+    # ================================
+    # Rebuild grocery list
+    # ================================
+
+    grocery_list = build_grocery_list(
+        selected_recipes,
+        state["pantry"]
+    )
+
+    # ================================
+    # Recalculate cost deterministically
+    # ================================
+
+    estimated_total = (
+        calculate_selected_total(
+            selected_recipes,
+            state["budget_analysis"]
+        )
+    )
+
+    print(
+        "\nRevised estimated total:",
+        estimated_total
+    )
+
+    # Update state
 
     return {
-        "weekly_plan": [],
-        "grocery_list": [],
-        "estimated_total": 0,
+        "weekly_plan": weekly_plan,
+        "grocery_list": grocery_list,
+        "estimated_total": estimated_total,
+
         "revision_count":
             state["revision_count"] + 1,
     }
