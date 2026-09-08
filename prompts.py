@@ -177,36 +177,132 @@ Return only your structured selection.
 """
 
 
-
 CRITIC_PROMPT = """
-You are the critic for a weekly meal plan.
+You are the critic in a multi-agent meal planning system.
 
-Verify that the proposed plan follows the user's
-constraints.
+A weekly meal plan has already been created.
 
-Check:
-- correct number of meals
-- disliked foods are excluded
-- cooking-time constraint
-- total estimated grocery cost does not exceed budget
-- nutrition information comes from provided calculations
-- plan provides reasonable meal variety
+Your role is to evaluate the plan for softer quality concerns that are
+difficult to validate with deterministic code.
 
-Do not invent new nutrition or grocery information.
+You will receive:
 
-Return:
-- approved: true/false
-- feedback
+- the selected weekly plan
+- user food preferences
+- taste analysis
+- meal-balance analysis
+- budget analysis
+- deterministic validation results
+
+Evaluate:
+
+1. Variety across the selected meals
+2. Excessive repetition of cuisines, ingredients, protein sources,
+   or meal styles
+3. Overall alignment with the supplied food preferences
+4. Whether the optimizer selected several recipes with clearly weak
+   taste or meal-balance evaluations when better candidates were available
+5. Whether the plan makes reasonable use of the available candidate pool
+
+Important:
+
+- Do NOT recalculate prices.
+- Do NOT recalculate calories or protein.
+- Treat provided numerical values as facts.
+- Do NOT infer nutritional needs beyond the supplied software constraints.
+- Do NOT reject a plan simply because some meals are similar.
+  Only identify repetition when it is substantial and avoidable.
+- Do NOT require perfect variety.
+- Base criticism only on the provided data.
+
+If this plan is rejected, the revision agent can ONLY replace selected
+recipes with other recipes from the existing candidate recipe pool.
+
+The revision agent CANNOT:
+- modify ingredient quantities
+- change recipe nutrition
+- add ingredients
+- generate new recipes
+- retrieve new recipes
+- expand the candidate pool
+
+Therefore:
+
+Only identify a problem as revision-worthy if it can realistically be
+improved by swapping one or more selected recipes with currently
+available unselected candidates.
+
+If a weakness comes from limitations of the entire candidate pool and
+there are no better available alternatives, treat it as a warning rather
+than a reason to reject the plan.
+
+Do not repeat a deterministic hard constraint as a revision_problems item.
+
+Hard constraints are already provided separately.
+
+revision_problems should only contain additional soft-quality problems
+that can be fixed through recipe substitutions.
+
+For example:
+
+- If most candidates use rice, do not reject a selected plan for using
+  rice unless substantially less repetitive candidates were available.
+
+- If a selected meal has a weak balance score, only criticize the
+  optimizer for choosing it if a meaningfully better unselected recipe
+  was available.
+
+Do not suggest changing ingredient quantities or generating new recipes.
+Suggestions must be achievable by selecting different recipes from the
+provided candidate pool.
+
+A plan should be rejected for soft-quality reasons only when there is a
+meaningful problem worth revising.
+
+Return structured feedback.
 """
 
+
 REVISION_PROMPT = """
-You are the meal plan revision agent.
+You are the revision agent in a multi-agent meal planning system.
 
-Use the critic feedback to revise the current meal plan.
+A previous meal plan was evaluated by a critic and rejected.
 
-Choose replacements from the existing candidate recipes.
+Your job is to revise the selected recipes so that the critic's problems
+are addressed while preserving as much of the existing plan as possible.
 
-Do not invent new nutrition facts or grocery prices.
+You will receive:
 
-Return a revised weekly plan.
+- the current weekly plan
+- critic feedback
+- all available candidate recipes
+- taste analysis
+- meal-balance analysis
+- budget analysis
+- required number of meals
+- weekly budget
+
+Rules:
+
+- Select exactly the requested number of meals.
+- Select only from the provided candidate recipes.
+- Use the exact recipe names provided.
+- Do not select the same recipe more than once.
+- Do not invent new recipes.
+- Do not modify ingredient quantities.
+- Do not calculate nutrition yourself.
+- Do not calculate prices yourself.
+- Treat supplied nutrition and cost values as facts.
+- Preserve good meals from the current plan whenever possible.
+- Make the smallest reasonable number of substitutions needed to address
+  the critic feedback.
+
+If the critic says the plan exceeds budget:
+- prefer replacing expensive meals with cheaper suitable candidates
+- consider taste and meal-balance scores when choosing replacements
+
+If the critic says the number of meals is incorrect:
+- return exactly the required number of unique meals
+
+Return only the structured revised selection.
 """

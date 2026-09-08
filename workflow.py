@@ -1,5 +1,34 @@
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
+from debug.state_utils import save_state
+import os
+
+MODEL_NAME = os.getenv(
+    "MEAL_PLANNER_MODEL",
+    "google_genai:gemini-3.5-flash-lite"
+)
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
+
+from langchain_google_genai.chat_models import GoogleAPIError
+
+@retry(
+    retry=retry_if_exception_type(GoogleAPIError),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(
+        multiplier=2,
+        min=2,
+        max=20,
+    ),
+    reraise=True,
+)
+def invoke_with_retry(model, messages):
+    return model.invoke(messages)
 
 from data.nutrition import (
     calculate_recipe_nutrition,
@@ -11,7 +40,7 @@ from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv 
 from langchain_core.messages import SystemMessage, HumanMessage
-from prompts import RECIPE_PROMPT, TASTE_PROMPT, BALANCE_PROMPT, OPTIMIZER_PROMPT
+from prompts import RECIPE_PROMPT, TASTE_PROMPT, BALANCE_PROMPT, OPTIMIZER_PROMPT, REVISION_PROMPT, CRITIC_PROMPT
 
 load_dotenv()
 
@@ -122,7 +151,36 @@ class OptimizerSelection(BaseModel):
     reasoning: str = Field(
         description="Short explanation of how the plan balances taste, cost, variety, and meal balance."
     )
+class CriticReview(BaseModel):
 
+    revision_problems: list[str] = Field(
+        description=(
+            "Meaningful problems that can actually be improved "
+            "by swapping selected recipes with other existing candidates. "
+            "Return an empty list if there are no revision-worthy problems."
+        )
+    )
+
+    warnings: list[str] = Field(
+        description=(
+            "Weaknesses or limitations worth mentioning that cannot "
+            "reasonably be fixed using the current candidate pool. "
+            "Warnings should not cause rejection."
+        )
+    )
+
+    suggestions: list[str] = Field(
+        description=(
+            "Specific recipe-selection changes that the revision agent "
+            "can make using existing candidates."
+        )
+    )
+
+    summary: str = Field(
+        description=(
+            "Short overall assessment of the selected weekly meal plan."
+        )
+    )
 
 # STATE
 class MealPlanState(TypedDict):
@@ -199,20 +257,22 @@ def recipe_generator_node(state: MealPlanState):
     constraints = state["planning_constraints"]
 
     model = init_chat_model(
-        "google_genai:gemini-3.6-flash"
+        "MODEL_NAME"
     )
 
     recipe_model = model.with_structured_output(
         RecipeList
     )
 
-    response = recipe_model.invoke([
-        SystemMessage(
-            content=RECIPE_PROMPT
-        ),
+    response = invoke_with_retry(
+        recipe_model,
+        [
+            SystemMessage(
+                content=RECIPE_PROMPT
+            ),
 
-        HumanMessage(
-            content=f"""
+            HumanMessage(
+                content=f"""
 Planning constraints:
 
 {constraints}
@@ -287,18 +347,19 @@ def taste_agent(state: MealPlanState):
     preferences = state["preferences"]
 
     model = init_chat_model(
-        "google_genai:gemini-3.6-flash"
+        "MODEL_NAME"
     )
 
     taste_model = model.with_structured_output(
         TasteAnalysis
     )
 
-    response = taste_model.invoke([
+    response = invoke_with_retry(
+    taste_model,
+    [
         SystemMessage(
             content=TASTE_PROMPT
         ),
-
         HumanMessage(
             content=f"""
 User preferences:
@@ -362,18 +423,19 @@ def meal_balance_agent(state: MealPlanState):
     goals = state["nutrition_goals"]
 
     model = init_chat_model(
-        "google_genai:gemini-3.6-flash"
+        "MODEL_NAME"
     )
 
     balance_model = model.with_structured_output(
         BalanceAnalysis
     )
 
-    response = balance_model.invoke([
+    response = invoke_with_retry(
+    balance_model,
+    [
         SystemMessage(
             content=BALANCE_PROMPT
         ),
-
         HumanMessage(
             content=f"""
 Supplied meal constraints:
@@ -516,7 +578,7 @@ def optimizer_node(state: MealPlanState):
     ]
 
     model = init_chat_model(
-        "google_genai:gemini-3.6-flash"
+        "MODEL_NAME"
     )
 
     optimizer_model = (
@@ -525,11 +587,12 @@ def optimizer_node(state: MealPlanState):
         )
     )
 
-    response = optimizer_model.invoke([
+    response = invoke_with_retry(
+    optimizer_model,
+    [
         SystemMessage(
             content=OPTIMIZER_PROMPT
         ),
-
         HumanMessage(
             content=f"""
 Number of meals required:
@@ -642,37 +705,300 @@ Use only exact recipe names from the candidate recipe list.
     }
 
 
-def critic_node(state: MealPlanState):
-    problems = []
+# in the case that the food is not provided per 100g this gets the missing prices of those items
+def get_selected_missing_prices(
+    weekly_plan,
+    budget_analysis
+):
+    recipe_costs = budget_analysis[
+        "recipe_cost"
+    ]
 
-    if (
-        state["estimated_total"]
-        > state["weekly_budget"]
-    ):
-        problems.append(
-            "Weekly plan exceeds budget."
+    missing = set()
+
+    for meal in weekly_plan:
+
+        recipe_name = meal["name"]
+
+        cost_info = recipe_costs.get(
+            recipe_name
         )
+
+        if cost_info is None:
+            continue
+
+        for ingredient in cost_info.get(
+            "missing_prices",
+            []
+        ):
+            missing.add(ingredient)
+
+    return sorted(missing)
+
+def save_pre_critic_state_node(
+    state: MealPlanState
+):
+    save_state(
+        state,
+        "pre_critic_state.json"
+    )
+    return {}
+
+
+def critic_node(state: MealPlanState):
+
+    hard_problems = []
+    warnings = []
+
+    weekly_plan = state["weekly_plan"]
 
     expected_meals = (
         state["preferences"]["meals_needed"]
     )
 
-    if len(state["weekly_plan"]) != expected_meals:
-        problems.append(
-            "Incorrect number of meals."
+    # 1. Correct number of meals
+
+    if len(weekly_plan) != expected_meals:
+
+        hard_problems.append(
+            f"Expected {expected_meals} meals, "
+            f"but received {len(weekly_plan)}."
         )
 
-    # Later:
-    # LLM checks softer concerns like
-    # variety and preference match.
+    # 2. Duplicate recipes
 
-    approved = len(problems) == 0
+    selected_names = [
+        meal["name"]
+        for meal in weekly_plan
+    ]
+
+    if len(selected_names) != len(
+        set(selected_names)
+    ):
+
+        hard_problems.append(
+            "Weekly plan contains duplicate recipes."
+        )
+
+    # 3. Valid candidate recipes
+
+    valid_recipe_names = {
+        recipe["name"]
+        for recipe in state["portioned_recipes"]
+    }
+
+    invalid_recipes = [
+        name
+        for name in selected_names
+        if name not in valid_recipe_names
+    ]
+
+    if invalid_recipes:
+
+        hard_problems.append(
+            "Weekly plan contains recipes that "
+            f"were not valid candidates: "
+            f"{invalid_recipes}"
+        )
+
+    # 4. Budget
+
+    if (
+        state["estimated_total"]
+        > state["weekly_budget"]
+    ):
+
+        hard_problems.append(
+            f"Weekly plan exceeds budget: "
+            f"${state['estimated_total']:.2f} "
+            f"> ${state['weekly_budget']:.2f}."
+        )
+
+    # 5. Missing price information
+
+    missing_prices = (
+        get_selected_missing_prices(
+            weekly_plan,
+            state["budget_analysis"]
+        )
+    )
+
+    if missing_prices:
+
+        warnings.append(
+            "The grocery price estimate is incomplete because "
+            "prices are missing for: "
+            + ", ".join(missing_prices)
+        )
+
+    # 6. Gemini soft-quality review
+
+    model = init_chat_model(
+        MODEL_NAME
+    )
+
+    critic_model = model.with_structured_output(
+        CriticReview
+    )
+
+    response = invoke_with_retry(
+    critic_model,
+    [
+        SystemMessage(
+            content=CRITIC_PROMPT
+        ),
+        HumanMessage(
+            content=f"""
+Selected weekly plan:
+
+{weekly_plan}
+
+
+User preferences:
+
+{state["preferences"]}
+
+
+All candidate recipes:
+
+{state["portioned_recipes"]}
+
+
+Taste analysis:
+
+{state["taste_analysis"]}
+
+
+Meal-balance analysis:
+
+{state["balance_analysis"]}
+
+
+Budget analysis:
+
+{state["budget_analysis"]}
+
+
+Deterministic hard problems already found:
+
+{hard_problems}
+
+
+Deterministic warnings already found:
+
+{warnings}
+
+
+Review the weekly plan for meaningful quality problems.
+
+Only put something in revision_problems if it can realistically
+be improved by replacing selected recipes with other recipes from
+the CURRENT candidate pool.
+
+Problems caused by limitations of the entire candidate pool should
+go into warnings instead.
+
+Do not suggest:
+- changing ingredient quantities
+- adding ingredients
+- generating new recipes
+- retrieving new recipes
+- recalculating nutrition
+- recalculating prices
+"""
+        )
+    ])
+
+    # 7. Get Gemini results
+
+    revision_problems = (
+        response.revision_problems
+    )
+
+    all_warnings = (
+        warnings
+        + response.warnings
+    )
+
+    # 8. Final approval
+
+    approved = (
+        len(hard_problems) == 0
+        and len(revision_problems) == 0
+    )
+
+    # 9. Build critic feedback
+
+    feedback_parts = []
+
+    if hard_problems:
+
+        feedback_parts.append(
+            "Hard constraint problems:\n- "
+            + "\n- ".join(
+                hard_problems
+            )
+        )
+
+    if revision_problems:
+
+        feedback_parts.append(
+            "Revision-worthy problems:\n- "
+            + "\n- ".join(
+                revision_problems
+            )
+        )
+
+    if response.suggestions:
+
+        feedback_parts.append(
+            "Revision suggestions:\n- "
+            + "\n- ".join(
+                response.suggestions
+            )
+        )
+
+    if all_warnings:
+
+        feedback_parts.append(
+            "Warnings:\n- "
+            + "\n- ".join(
+                all_warnings
+            )
+        )
+
+    critic_feedback = "\n\n".join(
+        feedback_parts
+    )
+
+    # 10. Debug output
+
+    print("\n=== CRITIC ===")
+
+    print(
+        "Approved:",
+        approved
+    )
+
+    print("\nSummary:")
+    print(
+        response.summary
+    )
+
+    if critic_feedback:
+
+        print("\nFeedback:")
+        print(
+            critic_feedback
+        )
+
+    # 11. Update LangGraph state
 
     return {
         "approved": approved,
-        "critic_feedback": "\n".join(problems)
+        "critic_feedback":
+            critic_feedback
     }
-
 
 def revision_node(state: MealPlanState):
 
@@ -755,6 +1081,7 @@ builder.add_node("optimizer", optimizer_node)
 builder.add_node("critic", critic_node)
 builder.add_node("revision", revision_node)
 builder.add_node("finalize", finalize_node)
+builder.add_node("save_pre_critic_state", save_pre_critic_state_node)
 
 
 # edges
@@ -777,7 +1104,16 @@ builder.add_edge(
     "optimizer"
 )
 
-builder.add_edge("optimizer", "critic")
+# builder.add_edge("optimizer", "critic")
+builder.add_edge(
+    "optimizer",
+    "save_pre_critic_state"
+)
+
+builder.add_edge(
+    "save_pre_critic_state",
+    "critic"
+)
 
 builder.add_conditional_edges(
     "critic",

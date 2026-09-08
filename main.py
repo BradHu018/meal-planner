@@ -62,8 +62,12 @@ initial_state = {
     "final_result": {},
 }
 
+if __name__ == "__main__":
 
-result = graph.invoke(initial_state)
+    result = graph.invoke(
+        initial_state
+    )
 
-
-print(result["final_result"])
+    print(
+        result["final_result"]
+    )
