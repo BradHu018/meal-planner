@@ -4,3 +4,9 @@ venv/
 __pycache__/
 *.pyc
 debug/snapshots/*.json
+chroma_db/
+
+#Food.com raw dataset 
+data/recipes/RAW_recipes.csv
+
+chroma_db/
