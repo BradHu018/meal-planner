@@ -1,6 +1,4 @@
-from rag.retriever import (
-    retrieve_recipes
-)
+from rag.retriever import retrieve_recipes
 
 
 queries = [
@@ -10,33 +8,30 @@ queries = [
     "vegetarian noodle dinner",
 ]
 
-results = retrieve_recipes(
-    queries,
-    k=5
-)
 
+for query in queries:
 
-print("\n=== QUERY ===")
-print(queries)
-
-
-print(
-    "\n=== RETRIEVED RECIPES ==="
-)
-
-
-for index, recipe in enumerate(
-    results,
-    start=1
-):
-
-    print(
-        f"\n{index}. "
-        f"{recipe['name']}"
+    results = retrieve_recipes(
+        query,
+        k=5
     )
 
-    print(
-        "Cooking time:",
-        recipe["minutes"],
-        "minutes"
-    )
+    print("\n==============================")
+    print("QUERY:")
+    print(query)
+
+    print("\nRETRIEVED RECIPES:")
+
+    for index, recipe in enumerate(
+        results,
+        start=1
+    ):
+        print(
+            f"\n{index}. {recipe['name']}"
+        )
+
+        print(
+            "Cooking time:",
+            recipe["minutes"],
+            "minutes"
+        )

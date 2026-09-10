@@ -41,6 +41,10 @@ initial_state = {
 
     "planning_constraints": {},
 
+    "retrieval_query": "",
+    "retrieved_recipes": [],
+    "filtered_recipes": [],
+
     "candidate_recipes": [],
 
     "enriched_recipes": [],
