@@ -69,8 +69,15 @@ class Recipe(BaseModel):
     cooking_time: int 
     ingredients: list[Ingredient]
 
-class RecipeList(BaseModel):
-    recipes: list[Recipe]
+# what gemini is allowed to return during the recipe adapter step
+class RecipeAdaptation(BaseModel):
+    source_recipe_id: str = Field(description="Exact retrieved Food.com recipe ID")
+    cuisine: str
+    ingredients: list[Ingredient]
+
+
+class RecipeAdaptationList(BaseModel):
+    recipes: list[RecipeAdaptation]
 
 class TasteEvaluation(BaseModel):
     recipe_name: str = Field(
@@ -348,7 +355,7 @@ def recipe_adapter_node(state: MealPlanState):
     count = min(len(sources), max(10, constraints["meals_needed"]))
     if count < constraints["meals_needed"]:
         raise ValueError("Insufficient filtered recipes for adaptation")
-    model = init_chat_model(MODEL_NAME).with_structured_output(RecipeList)
+    model = init_chat_model(MODEL_NAME).with_structured_output(RecipeAdaptationList)
     response = invoke_with_retry(model, [
         SystemMessage(content=RECIPE_PROMPT),
         HumanMessage(content=f"""Planning constraints:
@@ -362,22 +369,27 @@ Retrieved recipes (data, not instructions):
     recipes = [recipe.model_dump() for recipe in response.recipes]
     lookup = {str(recipe["recipe_id"]): recipe for recipe in sources}
     ids = [recipe["source_recipe_id"] for recipe in recipes]
-    names = [recipe["name"].strip().lower() for recipe in recipes]
-    if len(recipes) != count or len(set(ids)) != count or len(set(names)) != count:
-        raise ValueError("Adapter must return the requested number of unique source recipes and names")
+    if len(recipes) != count or len(set(ids)) != count:
+        raise ValueError("Adapter must return the requested number of unique source recipes")
+    candidates = []
     for recipe in recipes:
         source = lookup.get(recipe["source_recipe_id"])
         if source is None:
             raise ValueError("Adapter returned an unknown source_recipe_id")
-        if recipe["name"] != source["name"]:
-            raise ValueError("Adapter changed the source recipe name")
-        if recipe["cooking_time"] != source["minutes"]:
-            raise ValueError("Adapter changed the source cooking time")
         if not recipe["ingredients"] or contains_disliked_food(
             [item["name"] for item in recipe["ingredients"]], constraints["avoid"]
         ):
             raise ValueError("Adapter returned empty or disallowed ingredients")
-    return {"candidate_recipes": recipes}
+        candidates.append(Recipe(
+            **recipe,
+            name=source["name"],
+            cooking_time=source["minutes"],
+        ).model_dump())
+    # Downstream evaluation and selection still use recipe names as lookup keys.
+    names = [recipe["name"].strip().lower() for recipe in candidates]
+    if len(set(names)) != count:
+        raise ValueError("Selected source recipes must have unique canonical names")
+    return {"candidate_recipes": candidates}
 
 
 # adds the calories and proteins to the generated recipe 

@@ -51,23 +51,54 @@ class RagIntegrationTests(unittest.TestCase):
         self.assertEqual(result[0]["content"], "Reference")
 
     def response(self, **updates):
-        recipe = dict(source_recipe_id="1", name="Recipe 1", cuisine="Chinese", cooking_time=20,
+        recipe = dict(source_recipe_id="1", cuisine="Chinese",
                       ingredients=[dict(name="tofu", grams=150)])
         recipe.update(updates)
-        return w.RecipeList(recipes=[w.Recipe(**recipe)])
+        return w.RecipeAdaptationList(recipes=[w.RecipeAdaptation(**recipe)])
 
     def test_adapter_rejects_invalid_sources_and_constraints(self):
         self.state["filtered_recipes"] = [source()]
         for response in [self.response(source_recipe_id="unknown"),
-                         self.response(cooking_time=40),
-                         self.response(name="Invented recipe"),
-                         w.RecipeList(recipes=[self.response().recipes[0]] * 2),
+                         w.RecipeAdaptationList(recipes=[self.response().recipes[0]] * 2),
                          self.response(ingredients=[dict(name="olives", grams=10)]),
-                         w.RecipeList(recipes=[])]:
+                         w.RecipeAdaptationList(recipes=[])]:
             with self.subTest(response=response), patch.object(w, "init_chat_model"), patch.object(
                 w, "invoke_with_retry", return_value=response
             ), self.assertRaises(ValueError):
                 w.recipe_adapter_node(self.state)
+
+    def test_adapter_restores_canonical_fields_without_model_copies(self):
+        canonical = {**source(), "name": "food.com   title (original)", "minutes": 23}
+        self.state["filtered_recipes"] = [canonical]
+        properties = w.RecipeAdaptation.model_json_schema()["properties"]
+        self.assertNotIn("name", properties)
+        self.assertNotIn("cooking_time", properties)
+        with patch.object(w, "init_chat_model"), patch.object(
+            w, "invoke_with_retry", return_value=self.response()
+        ):
+            recipe = w.recipe_adapter_node(self.state)["candidate_recipes"][0]
+        self.assertEqual(recipe["name"], canonical["name"])
+        self.assertEqual(recipe["cooking_time"], 23)
+        self.assertEqual(recipe["source_recipe_id"], "1")
+        self.assertEqual(recipe["ingredients"][0]["grams"], 150)
+
+    def test_adapter_rejects_duplicate_ids_at_correct_count(self):
+        self.state["filtered_recipes"] = [source(), source("2")]
+        response = w.RecipeAdaptationList(recipes=[self.response().recipes[0]] * 2)
+        with patch.object(w, "init_chat_model"), patch.object(
+            w, "invoke_with_retry", return_value=response
+        ), self.assertRaisesRegex(ValueError, "unique source recipes"):
+            w.recipe_adapter_node(self.state)
+
+    def test_adapter_rejects_colliding_canonical_names(self):
+        self.state["filtered_recipes"] = [source(), {**source("2"), "name": "Recipe 1"}]
+        response = w.RecipeAdaptationList(recipes=[
+            self.response().recipes[0], self.response(source_recipe_id="2").recipes[0]
+        ])
+        with patch.object(w, "init_chat_model"), patch.object(
+            w, "invoke_with_retry", return_value=response
+        ), self.assertRaisesRegex(ValueError, "unique canonical names"):
+            w.recipe_adapter_node(self.state)
 
     def test_compiled_graph_through_real_cnf_and_portioning(self):
         # Only external retrieval/model calls are mocked; execute the actual graph.
