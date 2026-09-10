@@ -1,0 +1,22 @@
+[
+  {"id":"korean", "category":"cuisine", "query":"Korean dinner", "expected_tag_groups":[["korean"],["main-dish"]]},
+  {"id":"chinese_tofu", "category":"cuisine_ingredient", "query":"Chinese tofu dinner", "expected_tag_groups":[["chinese"],["main-dish"]], "expected_ingredient_groups":[["tofu"]]},
+  {"id":"quick_chicken_rice", "category":"time_ingredient", "query":"quick chicken and rice meal under 30 minutes", "max_minutes":30, "expected_ingredient_groups":[["chicken"],["rice"]], "expected_tag_groups":[["main-dish"]]},
+  {"id":"italian_pasta", "category":"cuisine_ingredient", "query":"Italian pasta dinner", "expected_tag_groups":[["italian"],["main-dish"]], "expected_ingredient_groups":[["pasta","spaghetti","penne","fettuccine","linguine","macaroni","rigatoni"]]},
+  {"id":"vegetarian_noodles", "category":"vegetarian", "query":"vegetarian noodle dinner", "expected_tag_groups":[["vegetarian","vegan"],["main-dish"]], "expected_ingredient_groups":[["noodles","spaghetti","linguine","fettuccine"]]},
+  {"id":"pantry_rice_soy", "category":"pantry", "query":"meal using rice and soy sauce", "expected_ingredient_groups":[["rice"],["soy sauce","soya sauce"]], "expected_tag_groups":[["main-dish"]]},
+  {"id":"chinese_no_peanuts", "category":"exclusion", "query":"Chinese meal without peanuts", "forbidden_terms":["peanut","peanuts"], "expected_tag_groups":[["chinese"],["main-dish"]]},
+  {"id":"korean_vegetarian_20", "category":"difficult", "query":"Korean vegetarian meal under 20 minutes", "max_minutes":20, "expected_tag_groups":[["korean"],["vegetarian","vegan"],["main-dish"]]},
+  {"id":"easy_comfort", "category":"vague", "query":"easy comforting dinner", "expected_tag_groups":[["easy"],["comfort-food"],["main-dish"]]},
+  {"id":"ethiopian_vegetarian", "category":"low_coverage", "query":"Ethiopian vegetarian dinner", "expected_tag_groups":[["ethiopian"],["vegetarian","vegan"],["main-dish"]]},
+  {"id":"salmon", "category":"ingredient", "query":"salmon dinner", "expected_ingredient_groups":[["salmon"]], "expected_tag_groups":[["main-dish"]]},
+  {"id":"lentil_soup", "category":"ingredient", "query":"hearty lentil soup", "expected_terms":["soup"], "expected_ingredient_groups":[["lentils"]]},
+  {"id":"dinner_15", "category":"time", "query":"quick dinner ready in 15 minutes", "max_minutes":15, "expected_tag_groups":[["main-dish"]]},
+  {"id":"mexican_beans", "category":"cuisine_ingredient", "query":"Mexican black bean dinner", "expected_tag_groups":[["mexican"],["main-dish"]], "expected_ingredient_groups":[["black beans"]]},
+  {"id":"thai_no_coconut", "category":"exclusion", "query":"Thai dinner without coconut", "forbidden_terms":["coconut"], "expected_tag_groups":[["thai"],["main-dish"]]},
+  {"id":"indian_vegan", "category":"vegetarian", "query":"Indian vegan dinner", "expected_tag_groups":[["indian"],["vegan"],["main-dish"]]},
+  {"id":"korean_tofu_5", "category":"difficult", "query":"Korean tofu dinner under 5 minutes without soy sauce", "max_minutes":5, "forbidden_terms":["soy sauce","soya sauce"], "expected_tag_groups":[["korean"],["main-dish"]], "expected_ingredient_groups":[["tofu"]]},
+  {"id":"generated_demo", "category":"query_builder", "query":"Korean or Chinese dinner using rice and soy sauce", "planning_constraints":{"preferred_cuisines":["Korean","Chinese"],"pantry":["rice","soy sauce"],"max_cooking_time":30,"avoid":["olives"]}, "max_minutes":30, "forbidden_terms":["olives"], "expected_tag_groups":[["korean","chinese"],["main-dish"]], "expected_ingredient_groups":[["rice"],["soy sauce","soya sauce"]]},
+  {"id":"generated_italian", "category":"query_builder", "query":"Italian tomato pasta under 30 minutes", "planning_constraints":{"preferred_cuisines":["Italian"],"pantry":["pasta","tomatoes"],"max_cooking_time":30,"avoid":[]}, "max_minutes":30, "expected_tag_groups":[["italian"],["main-dish"]], "expected_ingredient_groups":[["tomato","tomatoes"],["pasta","spaghetti","penne","linguine"]]},
+  {"id":"generated_pantry", "category":"query_builder", "query":"quick meal using eggs and rice", "planning_constraints":{"preferred_cuisines":[],"pantry":["eggs","rice"],"max_cooking_time":20,"avoid":[]}, "max_minutes":20, "expected_ingredient_groups":[["eggs"],["rice"]], "expected_tag_groups":[["main-dish"]]}
+]
