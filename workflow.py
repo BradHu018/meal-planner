@@ -3,6 +3,7 @@ from langgraph.graph import StateGraph, START, END
 from debug.state_utils import save_state
 import os
 import json
+from copy import deepcopy
 import re
 from dotenv import load_dotenv
 from rag.retriever import retrieve_recipes
@@ -45,7 +46,27 @@ from data.prices import calculate_recipe_cost
 from pydantic import BaseModel, Field 
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import SystemMessage, HumanMessage
-from prompts import RECIPE_PROMPT, TASTE_PROMPT, BALANCE_PROMPT, OPTIMIZER_PROMPT, REVISION_PROMPT, CRITIC_PROMPT
+from prompts import RETRIEVAL_GRADER_PROMPT, QUERY_REWRITER_PROMPT, RECIPE_PROMPT, TASTE_PROMPT, BALANCE_PROMPT, OPTIMIZER_PROMPT, REVISION_PROMPT, CRITIC_PROMPT
+
+MAX_RETRIEVAL_ATTEMPTS = 3
+
+
+class RetrievalGrade(BaseModel):
+    sufficient: bool
+    top_alignment: int = Field(ge=0, le=4)
+    meal_suitability: int = Field(ge=0, le=4)
+    diversity: int = Field(ge=0, le=4)
+    reason: str
+    rewrite_focus: str | None = None
+
+
+class RewrittenQuery(BaseModel):
+    query: str = Field(min_length=1, max_length=600)
+
+
+class RetrievalFailure(ValueError):
+    """The bounded retrieval loop could not find a sufficient candidate pool."""
+
 
 class Ingredient(BaseModel):
     name: str = Field(
@@ -228,6 +249,11 @@ class MealPlanState(TypedDict):
     planning_constraints: dict
 
     retrieval_query: str
+    retrieval_attempts: int
+    retrieval_feedback: dict
+    best_retrieval: dict
+    retrieval_sufficient: bool
+    retrieval_query_history: list[str]
     retrieved_recipes: list[dict]
     filtered_recipes: list[dict]
 
@@ -296,13 +322,23 @@ def retrieval_query_node(state: MealPlanState):
     if pantry:
         query += f" using {pantry}"
     query += f" ready within {constraints['max_cooking_time']} minutes"
-    return {"retrieval_query": query}
+    return {"retrieval_query": query, "retrieval_attempts": 0,
+            "retrieval_feedback": {}, "best_retrieval": {}, "retrieval_sufficient": False,
+            "retrieval_query_history": []}
 
 
 def recipe_retriever_node(state: MealPlanState):
     # Over-retrieve to leave room for hard filtering and optimizer variety.
     k = max(50, state["planning_constraints"]["meals_needed"] * 10)
-    return {"retrieved_recipes": retrieve_recipes(state["retrieval_query"], k=k)}
+    attempts = state.get("retrieval_attempts", 0)
+    if attempts >= MAX_RETRIEVAL_ATTEMPTS:
+        raise RetrievalFailure("Retrieval attempt limit already reached")
+    return {
+        "retrieved_recipes": retrieve_recipes(state["retrieval_query"], k=k),
+        "retrieval_attempts": attempts + 1,
+        "retrieval_query_history": [*state.get("retrieval_query_history", []), state["retrieval_query"]],
+        "retrieval_sufficient": False,
+    }
 
 
 def food_tokens(text):
@@ -341,12 +377,140 @@ def deterministic_retrieval_filter_node(state: MealPlanState):
             continue
         filtered.append(recipe)
         seen.add(recipe_id)
-    if len(filtered) < constraints["meals_needed"]:
-        raise ValueError(
-            f"Only {len(filtered)} retrieved recipes satisfy hard constraints; "
-            f"{constraints['meals_needed']} meals required. Expand retrieval or adjust constraints."
-        )
     return {"filtered_recipes": filtered}
+
+
+def retrieval_grader_node(state: MealPlanState):
+    recipes = state["filtered_recipes"]
+    required = state["planning_constraints"]["meals_needed"]
+    unique_names = {recipe["name"].strip().lower() for recipe in recipes}
+    if len(unique_names) < required:
+        grade = RetrievalGrade(
+            sufficient=False, top_alignment=0, meal_suitability=0, diversity=0,
+            reason=f"Only {len(unique_names)} distinct filtered recipes; {required} required.",
+            rewrite_focus="Find more distinct meal recipes matching the original intent without relaxing constraints.",
+        )
+    else:
+        model = init_chat_model(MODEL_NAME).with_structured_output(RetrievalGrade)
+        grade = invoke_with_retry(model, [
+            SystemMessage(content=RETRIEVAL_GRADER_PROMPT),
+            HumanMessage(content=json.dumps({
+                "original_query": state["retrieval_query_history"][0],
+                "current_query": state["retrieval_query"],
+                "planning_constraints": state["planning_constraints"],
+                "required_meals": required,
+                "filtered_count": len(recipes),
+                "top_results_in_rank_order": recipes[:max(10, required)],
+                "pool_summary": [{"name": r["name"], "ingredients": r["ingredients"]} for r in recipes],
+            })),
+        ])
+    # A positive model verdict cannot bypass the anchored quality floors.
+    sufficient = (len(unique_names) >= required and grade.sufficient
+                  and grade.top_alignment >= 3 and grade.meal_suitability >= 3
+                  and grade.diversity >= 2)
+    feedback = grade.model_dump()
+    feedback["sufficient"] = sufficient
+    quality = 3 * grade.top_alignment + 2 * grade.meal_suitability + grade.diversity
+    snapshot = {
+        "attempt": state["retrieval_attempts"], "query": state["retrieval_query"],
+        "retrieved_recipes": state["retrieved_recipes"],
+        "filtered_recipes": recipes, "feedback": feedback,
+        "sufficient": sufficient, "quality": quality,
+    }
+    best = state.get("best_retrieval", {})
+    if not best or (sufficient, quality) > (best["sufficient"], best["quality"]):
+        best = deepcopy(snapshot)
+    return {"retrieval_sufficient": sufficient, "retrieval_feedback": feedback,
+            "best_retrieval": best}
+
+
+def safe_rewrite_phrasing(proposed: str, original: str):
+    """Keep constraint directives out of model-authored search phrasing.
+
+    Fall back to the original intent if the model introduces a dietary label,
+    quantity, time limit, or exclusion. Python supplies authoritative directives.
+    This is a conservative wording guard, not a general semantic proof.
+    """
+    proposed = proposed.strip()
+    directives = r"\d|\b(?:no|not|without|avoid|exclude|excluding|under|within|maximum|minimum|less|more)\b|\b\w+[- ]free\b"
+    if not proposed or re.search(directives, proposed, re.IGNORECASE):
+        return original
+    dietary_labels = {
+        "vegan", "vegetarian", "pescatarian", "keto", "ketogenic", "paleo",
+        "halal", "kosher", "organic", "low-carb", "low-fat", "low-sodium",
+        "high-protein", "low-calorie", "diabetic",
+    }
+    normalized = " ".join(re.findall(r"[a-z]+", proposed.lower()))
+    original_normalized = " ".join(re.findall(r"[a-z]+", original.lower()))
+    for label in dietary_labels:
+        phrase = label.replace("-", " ")
+        if phrase in normalized and phrase not in original_normalized:
+            return original
+    return proposed
+
+
+def query_rewriter_node(state: MealPlanState):
+    if state["retrieval_attempts"] >= MAX_RETRIEVAL_ATTEMPTS:
+        raise RetrievalFailure("No retrieval rewrites remain")
+    constraints = state["planning_constraints"]
+    original = state["retrieval_query_history"][0]
+    model = init_chat_model(MODEL_NAME).with_structured_output(RewrittenQuery)
+    response = invoke_with_retry(model, [
+        SystemMessage(content=QUERY_REWRITER_PROMPT),
+        HumanMessage(content=json.dumps({
+            "original_query": original,
+            "planning_constraints": constraints,
+            "previous_query": state["retrieval_query"],
+            "query_history": state["retrieval_query_history"],
+            "grader_feedback": state["retrieval_feedback"],
+        })),
+    ])
+    # Query text is a search hint, never the authority for hard constraints.
+    # Keep the original intent and constraints even if the model omits them.
+    query = (
+        f"{safe_rewrite_phrasing(response.query, original)} | Original intent: {original}"
+        f" | Maximum cooking time: {constraints['max_cooking_time']} minutes."
+    )
+    if constraints["avoid"]:
+        query += " Exclude ingredients: " + ", ".join(constraints["avoid"]) + "."
+    if constraints.get("preferred_cuisines"):
+        query += " Preferred cuisines: " + ", ".join(constraints["preferred_cuisines"]) + "."
+    if constraints.get("pantry"):
+        query += " Pantry preferences: " + ", ".join(constraints["pantry"]) + "."
+    return {"retrieval_query": query}
+
+
+def route_after_retrieval_grade(state: MealPlanState):
+    best = state.get("best_retrieval", {})
+    feedback = state["retrieval_feedback"]
+    strong = state["retrieval_sufficient"] and feedback["top_alignment"] == 4
+    exhausted = state["retrieval_attempts"] >= MAX_RETRIEVAL_ATTEMPTS
+    if best.get("sufficient") and (strong or exhausted):
+        return "select_best_retrieval"
+    if not exhausted:
+        return "query_rewriter"
+    return "retrieval_failure"
+
+
+def select_best_retrieval_node(state: MealPlanState):
+    best = state.get("best_retrieval", {})
+    if not best.get("sufficient"):
+        raise RetrievalFailure("No sufficient retrieval attempt available")
+    # Restore matching raw/filtered pools together so adapter provenance stays local.
+    return {"retrieval_query": best["query"],
+            "retrieved_recipes": deepcopy(best["retrieved_recipes"]),
+            "filtered_recipes": deepcopy(best["filtered_recipes"]),
+            "retrieval_feedback": deepcopy(best["feedback"]),
+            "retrieval_sufficient": True}
+
+
+def retrieval_failure_node(state: MealPlanState):
+    raise RetrievalFailure(
+        f"Retrieval failed after {state['retrieval_attempts']} attempts: "
+        f"{state['retrieval_feedback']['reason']} "
+        f"Surviving recipes: {len(state['filtered_recipes'])}. "
+        "Hard constraints were not relaxed."
+    )
 
 
 def recipe_adapter_node(state: MealPlanState):
@@ -1345,6 +1509,10 @@ builder.add_node("planner", planner_node)
 builder.add_node("retrieval_query", retrieval_query_node)
 builder.add_node("recipe_retriever", recipe_retriever_node)
 builder.add_node("deterministic_retrieval_filter", deterministic_retrieval_filter_node)
+builder.add_node("retrieval_grader", retrieval_grader_node)
+builder.add_node("query_rewriter", query_rewriter_node)
+builder.add_node("retrieval_failure", retrieval_failure_node)
+builder.add_node("select_best_retrieval", select_best_retrieval_node)
 builder.add_node("recipe_adapter", recipe_adapter_node)
 builder.add_node("nutrition_enrichment", nutrition_enrichment_node)
 builder.add_node("portion_calculator", portion_calculator_node)
@@ -1367,7 +1535,15 @@ builder.add_edge(START, "planner")
 builder.add_edge("planner", "retrieval_query")
 builder.add_edge("retrieval_query", "recipe_retriever")
 builder.add_edge("recipe_retriever", "deterministic_retrieval_filter")
-builder.add_edge("deterministic_retrieval_filter", "recipe_adapter")
+builder.add_edge("deterministic_retrieval_filter", "retrieval_grader")
+builder.add_conditional_edges("retrieval_grader", route_after_retrieval_grade, {
+    "select_best_retrieval": "select_best_retrieval",
+    "query_rewriter": "query_rewriter",
+    "retrieval_failure": "retrieval_failure",
+})
+builder.add_edge("select_best_retrieval", "recipe_adapter")
+builder.add_edge("query_rewriter", "recipe_retriever")
+builder.add_edge("retrieval_failure", END)
 builder.add_edge("recipe_adapter", "nutrition_enrichment")
 
 builder.add_edge("nutrition_enrichment", "portion_calculator")
@@ -1407,7 +1583,8 @@ builder.add_edge("revision", "critic")
 builder.add_edge("finalize", END)
 
 
-graph = builder.compile()
+# Allow both bounded retrieval retries and the existing two plan revisions.
+graph = builder.compile().with_config({"recursion_limit": 40})
 
 
 if __name__ == "__main__":

@@ -10,3 +10,6 @@ chroma_db/
 data/recipes/RAW_recipes.csv
 
 chroma_db/
+# Isolated corpus-size experiment artifacts
+chroma_db_20k/
+data/recipes/recipes_rag_20k.csv

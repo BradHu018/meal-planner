@@ -42,6 +42,11 @@ initial_state = {
     "planning_constraints": {},
 
     "retrieval_query": "",
+    "retrieval_attempts": 0,
+    "retrieval_feedback": {},
+    "best_retrieval": {},
+    "retrieval_sufficient": False,
+    "retrieval_query_history": [],
     "retrieved_recipes": [],
     "filtered_recipes": [],
 

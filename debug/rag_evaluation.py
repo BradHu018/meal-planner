@@ -1,5 +1,6 @@
 """Deterministic metadata-proxy evaluation; see RAG_EVALUATION.md."""
 import argparse
+import copy
 import ast
 import csv
 import hashlib
@@ -18,7 +19,7 @@ from workflow import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DATASET = ROOT / 'data/recipes/recipes_rag.csv'
+from rag.config import RECIPE_FILE as DATASET, CORPUS, COLLECTION_NAME, VECTOR_DB_PATH
 BENCHMARKS = Path(__file__).with_name('rag_benchmarks.json')
 CUISINE_TAGS = {
     'korean', 'chinese', 'italian', 'ethiopian', 'japanese', 'thai', 'indian',
@@ -103,7 +104,41 @@ def cuisine_diversity(recipes, metadata):
             'cuisine_tag_coverage': tagged / len(recipes) if recipes else 0}
 
 
-def evaluate_case(case, metadata):
+def run_agentic_retrieval(state):
+    """Debug driver calls production nodes/routes; receives no benchmark labels."""
+    from workflow import (RetrievalFailure, retrieval_grader_node,
+                          query_rewriter_node, route_after_retrieval_grade,
+                          retrieval_failure_node, select_best_retrieval_node)
+    original_constraints = copy.deepcopy(state['planning_constraints'])
+    trace = []
+    failure = None
+    while True:
+        state.update(recipe_retriever_node(state))
+        state.update(deterministic_retrieval_filter_node(state))
+        state.update(retrieval_grader_node(state))
+        assert state['planning_constraints'] == original_constraints
+        trace.append({
+            'attempt': state['retrieval_attempts'], 'query': state['retrieval_query'],
+            'grade': state['retrieval_feedback'],
+            'retrieved': copy.deepcopy(state['retrieved_recipes']),
+            'filtered': copy.deepcopy(state['filtered_recipes']),
+        })
+        route = route_after_retrieval_grade(state)
+        if route == 'select_best_retrieval':
+            state.update(select_best_retrieval_node(state))
+            break
+        if route == 'retrieval_failure':
+            try:
+                retrieval_failure_node(state)
+            except RetrievalFailure as exc:
+                failure = str(exc)
+            break
+        state.update(query_rewriter_node(state))
+        assert state['planning_constraints'] == original_constraints
+    return trace, failure
+
+
+def evaluate_case(case, metadata, mode='baseline'):
     minimum = case.get('minimum_valid_candidates', 7)
     constraints = dict(case.get('planning_constraints', {}))
     constraints.update(max_cooking_time=case.get('max_minutes', 180),
@@ -112,16 +147,18 @@ def evaluate_case(case, metadata):
     query = (retrieval_query_node(state)['retrieval_query']
              if 'planning_constraints' in case else case['query'])
     state['retrieval_query'] = query
-    state.update(recipe_retriever_node(state))
+    trace = []
+    failure = None
+    if mode == 'agentic':
+        trace, failure = run_agentic_retrieval(state)
+    else:
+        state.update(recipe_retriever_node(state))
+        state.update(deterministic_retrieval_filter_node(state))
     retrieved = state['retrieved_recipes']
-    filter_error = None
-    try:
-        filtered = deterministic_retrieval_filter_node(state)['filtered_recipes']
-    except ValueError as exc:
-        filter_error = str(exc)
-        # Observe survivors of the same production filter without its pool-size gate.
-        diagnostic = {**state, 'planning_constraints': {**constraints, 'meals_needed': 0}}
-        filtered = deterministic_retrieval_filter_node(diagnostic)['filtered_recipes']
+    filtered = state['filtered_recipes']
+    # Preserve the baseline pool-gate observation after production moves it to grader.
+    filter_error = (f"Only {len(filtered)} retrieved recipes satisfy hard constraints; "
+                    f"{minimum} meals required." if len(filtered) < minimum else None)
     missing = sum(not r.get('recipe_id') for r in retrieved)
     invalid = sum(bool(r.get('recipe_id')) and str(r['recipe_id']) not in metadata
                   for r in retrieved)
@@ -132,6 +169,19 @@ def evaluate_case(case, metadata):
     corpus_count = sum(relevant(row, case) for row in metadata.values())
     result = {
         'id': case['id'], 'category': case['category'], 'scenario': case['query'],
+        'selected_attempt': state.get('best_retrieval', {}).get('attempt') if state.get('retrieval_sufficient') else None,
+        'best_runtime_quality': state.get('best_retrieval', {}).get('quality'),
+        'mode': mode, 'retrieval_attempts': state.get('retrieval_attempts', 1),
+        'retrieval_query_history': state.get('retrieval_query_history', [query]),
+        'retrieval_sufficient': state.get('retrieval_sufficient') if mode == 'agentic' else None,
+        'retrieval_failure': failure,
+        'attempt_trace': trace,
+        'final_query': state['retrieval_query'],
+        'all_attempt_time_violations': sum(not 0 < r['minutes'] <= constraints['max_cooking_time']
+                                         for t in trace for r in t['filtered']),
+        'all_attempt_forbidden_violations': sum(forbidden(r, case) for t in trace for r in t['filtered']),
+        'all_attempt_invalid_ids': sum(str(r.get('recipe_id')) not in metadata
+                                      for t in trace for r in t['retrieved']),
         'executed_query': query,
         'query_mode': 'production_query_builder' if 'planning_constraints' in case else 'literal',
         'retrieved_count': len(retrieved), 'filtered_count': len(filtered),
@@ -195,9 +245,35 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--benchmarks', type=Path, default=BENCHMARKS)
     parser.add_argument('--output', type=Path, default=Path('/tmp/rag-evaluation.json'))
+    parser.add_argument('--mode', choices=['baseline', 'agentic', 'compare'], default='baseline')
+    parser.add_argument('--cases', nargs='+', help='Optional existing benchmark IDs')
     args = parser.parse_args()
     cases = json.loads(args.benchmarks.read_text())
+    if args.cases:
+        unknown = set(args.cases) - {case['id'] for case in cases}
+        if unknown:
+            parser.error(f'Unknown cases: {sorted(unknown)}')
+        cases = [case for case in cases if case['id'] in args.cases]
     metadata = load_metadata()
+    if args.mode != 'baseline':
+        modes = ['baseline', 'agentic'] if args.mode == 'compare' else ['agentic']
+        reports = {mode: [] for mode in modes}
+        for case in cases:
+            for mode in modes:
+                result = evaluate_case(case, metadata, mode)
+                reports[mode].append(result)
+                print(f"{case['id']} [{mode}]: attempts={result['retrieval_attempts']} "
+                      f"filtered={result['filtered_count']} P@5={result['filtered_precision_at_5']} "
+                      f"accepted={result['retrieval_sufficient']} failure={result['retrieval_failure']}", flush=True)
+        output = {'corpus': CORPUS, 'collection': COLLECTION_NAME, 'index_path': str(VECTOR_DB_PATH), 'created_at': datetime.now(timezone.utc).isoformat(),
+                  'benchmarks_sha256': hashlib.sha256(args.benchmarks.read_bytes()).hexdigest(),
+                  'dataset_sha256': hashlib.sha256(DATASET.read_bytes()).hexdigest(),
+                  'aggregate': {mode: aggregate(rows) for mode, rows in reports.items()},
+                  'cases': reports}
+        args.output.write_text(json.dumps(output, indent=2))
+        print(json.dumps(output['aggregate'], indent=2))
+        print('JSON report:', args.output)
+        return
     results = []
     for case in cases:
         result = evaluate_case(case, metadata)
@@ -217,7 +293,7 @@ def main():
     summary = aggregate(results)
     worst = sorted((r for r in results if r['filtered_precision_at_5'] is not None),
                    key=lambda r: (r['filtered_precision_at_5'], r['relevant_filtered_count'], r['id']))[:5]
-    report = {'created_at': datetime.now(timezone.utc).isoformat(),
+    report = {'corpus': CORPUS, 'collection': COLLECTION_NAME, 'index_path': str(VECTOR_DB_PATH), 'created_at': datetime.now(timezone.utc).isoformat(),
               'dataset_sha256': hashlib.sha256(DATASET.read_bytes()).hexdigest(),
               'benchmarks_sha256': hashlib.sha256(args.benchmarks.read_bytes()).hexdigest(),
               'metric': 'strict metadata relevance proxy; not human labels',

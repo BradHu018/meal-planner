@@ -1,0 +1,11 @@
+{
+  "seed": 42,
+  "newline_mode": "universal LF (matches existing 5k descriptions)",
+  "raw_sha256": "6a8136d1da9e03396a9f52d72200b3fddb8fe103f11e1496effca30ac4e0539f",
+  "baseline_sha256": "99459e27d55234d999ec65c969c55b64ca7f2385cb1546f926b3db4da49db426",
+  "larger_sha256": "eb7ecd2bcdcd4951d48e9180c7f81a5de1a383aed7301f3ba0a61ce1ecfa6495",
+  "baseline_reproduced": true,
+  "baseline_is_subset": true,
+  "cleaned_count": 211838,
+  "larger_count": 20000
+}

@@ -1,5 +1,4 @@
 import ast
-import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -11,7 +10,7 @@ from rag.vector_store import (
 )
 
 
-RECIPE_FILE = "data/recipes/recipes_rag.csv"
+from rag.config import RECIPE_FILE
 
 
 def parse_list(value):
@@ -117,12 +116,8 @@ def rebuild_vector_store():
         VECTOR_DB_PATH
     )
 
-    # During development:
-    # delete old DB so we don't duplicate recipes
     if db_path.exists():
-        shutil.rmtree(
-            db_path
-        )
+        raise FileExistsError(f"Refusing to overwrite existing index: {db_path}")
 
     documents, ids = (
         load_recipe_documents()
@@ -136,10 +131,10 @@ def rebuild_vector_store():
         get_vector_store()
     )
 
-    vector_store.add_documents(
-        documents=documents,
-        ids=ids
-    )
+    for start in range(0, len(documents), 256):
+        vector_store.add_documents(documents=documents[start:start + 256],
+                                   ids=ids[start:start + 256])
+        print(f"Indexed {min(start + 256, len(documents))}/{len(documents)}", flush=True)
 
     print(
         f"Added {len(documents)} recipes "

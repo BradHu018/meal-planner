@@ -32,10 +32,9 @@ class RagIntegrationTests(unittest.TestCase):
         self.assertTrue(w.contains_disliked_food(["peanut-butter"], ["peanuts"]))
         self.assertFalse(w.contains_disliked_food(["eggplant"], ["egg"]))
 
-    def test_insufficient_results_fail_explicitly(self):
+    def test_insufficient_results_are_observable(self):
         self.state["retrieved_recipes"] = []
-        with self.assertRaisesRegex(ValueError, "Only 0"):
-            w.deterministic_retrieval_filter_node(self.state)
+        self.assertEqual(w.deterministic_retrieval_filter_node(self.state), {"filtered_recipes": []})
 
     def test_retriever_preserves_document_and_structured_ingredients(self):
         doc = Document(page_content="Reference", metadata=dict(recipe_id="123", name="Tofu", minutes=20))
@@ -104,13 +103,15 @@ class RagIntegrationTests(unittest.TestCase):
         # Only external retrieval/model calls are mocked; execute the actual graph.
         with patch.object(w, "retrieve_recipes", return_value=[source()]) as retrieve, patch.object(
             w, "init_chat_model"
-        ), patch.object(w, "invoke_with_retry", return_value=self.response()):
+        ), patch.object(w, "invoke_with_retry", side_effect=[
+            w.RetrievalGrade(top_alignment=4, meal_suitability=4, diversity=3, sufficient=True, reason="Good pool"), self.response()
+        ]):
             updates = list(w.graph.stream(self.state, stream_mode="updates",
                                           interrupt_after=["portion_calculator"]))
         updates = [update for update in updates if "__interrupt__" not in update]
         nodes = [next(iter(update)) for update in updates]
         self.assertEqual(nodes, ["planner", "retrieval_query", "recipe_retriever",
-                               "deterministic_retrieval_filter", "recipe_adapter",
+                               "deterministic_retrieval_filter", "retrieval_grader", "select_best_retrieval", "recipe_adapter",
                                "nutrition_enrichment", "portion_calculator"])
         self.assertEqual(retrieve.call_args.kwargs["k"], 50)
         recipes = updates[-1]["portion_calculator"]["portioned_recipes"]

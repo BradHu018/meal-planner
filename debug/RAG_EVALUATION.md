@@ -33,11 +33,11 @@ retrieval count (70 at the default seven meals), then the production determinist
 filter. The adapter normally prefers ten candidates but accepts seven; both pool
 thresholds are reported. The model-backed adapter is intentionally not invoked.
 
-The production filter raises on undersized pools. Evaluation records that error,
-then calls the same filter on the same results with `meals_needed=0` solely to
-observe survivors. This is not another retrieval attempt and does not relax time
-or ingredient constraints. Database/model failures abort the suite rather than
-silently counting an infrastructure failure as poor retrieval.
+The production filter returns all hard-valid survivors, including undersized pools.
+Baseline evaluation retains the original pool-size diagnostic in `filter_error`,
+without invoking the production grader or changing its single retrieval attempt.
+Database/model failures abort the suite rather than counting infrastructure errors
+as poor retrieval.
 
 ## Metrics and interpretation
 
@@ -87,3 +87,75 @@ vague concepts. An LLM judge is optional, not necessary for this first baseline.
 The literal-query cases evaluate semantic retrieval capabilities beyond the current
 query builder's vocabulary; the three query-builder cases measure its actual output.
 Keep these modes in mind before attributing all results to production query construction.
+
+
+## Agentic comparison (opt-in, uses Gemini)
+
+```bash
+HF_HUB_OFFLINE=1 .venv/bin/python -B -m debug.rag_evaluation --mode compare --cases salmon easy_comfort korean_tofu_5 --output /tmp/rag-agentic-comparison.json
+```
+
+Omit `--cases` to compare all 20; use `--mode agentic` for agentic-only evaluation.
+Baseline remains the default and does not use Gemini. Benchmark definitions and
+relevance metrics are identical in both modes. Generated-query scenarios still
+start with the same production query-builder output. Literal scenarios start with
+the same literal text; expectations are never converted to production requirements.
+
+The debug driver calls the production retriever, hard filter, grader, rewriter,
+and routing/failure functions. It stops before Recipe Adapter; it does not execute
+nutrition or plan selection. The production graph's edges and adapter handoff are
+covered by `debug.agentic_rag_test`. The driver receives only the original query
+and user-style constraints, never expected terms/tags or relevance labels.
+
+The grader uses Python for insufficient distinct candidate counts. With enough
+candidates it calls Gemini for semantic alignment and pool repetition. The rewriter
+uses Gemini, while Python retains the original intent and appends constraints.
+A conservative wording guard falls back to the original intent if the proposal
+contains numeric/time/exclusion directives or introduces a recognized dietary
+label. This prevents specific observed overgeneralizations such as replacing
+"without soy sauce" with "soy-free"; it does not prove semantic equivalence.
+There are at most three retrieval calls and two rewrites. Existing API retry policy
+can make multiple requests for one logical model call. Identical rewrites still
+consume the bounded attempt budget. One best-attempt snapshot is preserved; no result accumulation is performed.
+On success, metrics describe the selected sufficient pool; on failure they describe
+the last attempted pool for diagnosis. `selected_attempt` and per-attempt traces
+make that distinction explicit.
+
+Reports include acceptance/failure separately from P@5, attempts, query history,
+per-attempt grades and retrieved/filtered recipes, and hard-constraint/source-ID
+audits across all attempts. A failed agentic run can have hard-valid survivors;
+those survivors are scored for diagnosis but are NOT passed to the adapter.
+Usable rate is final-filtered/final-retrieved, not cumulative retrieval volume.
+
+Grader acceptance is an LLM judgment of meal usefulness, not the benchmark's strict
+metadata proxy. It can accept pools with low proxy P@5 or reject sparse pools;
+it is not a guarantee of measured quality. Runtime constraints are authoritative
+Python state and cannot be updated by the rewriter. Query wording alone is not
+proof of constraint compliance. The existing literal ingredient matcher still
+has the synonym/plural limitations documented above.
+
+Full graph recursion allowance is 40 steps to accommodate both the three-attempt
+retrieval loop and the pre-existing two-revision meal-plan loop; their explicit
+counters still bound each loop independently. Retrieval failure raises
+`RetrievalFailure` and cannot silently finalize a relaxed plan.
+
+
+## Best-attempt runtime selection
+
+Production grading now supplies anchored 0..4 scores for top-result alignment,
+meal suitability, and diversity, with evidence for each of the first five recipes.
+Scores use only original intent, constraints, and retrieved content, never benchmark
+labels. Python requires a positive model verdict, enough distinct names, alignment
+and meal suitability >=3, and diversity >=2. The weighted runtime quality is
+`3 * alignment + 2 * meal_suitability + diversity`; this is not Precision@5.
+
+Snapshots are ranked by sufficiency first, then runtime quality; ties retain the
+earlier snapshot. Strong alignment (4) ends exploration. Acceptable but improvable
+alignment (3) can trigger another rewrite within the existing three-attempt limit.
+At the limit, the best sufficient snapshot is restored, including its matching
+query, raw pool, filtered pool, and feedback. Attempt count and complete query
+history remain intact. If no attempt was sufficient, the graph fails without
+passing any pool to the adapter. The state field `best_retrieval` stores one snapshot.
+
+Scores are model judgments, so best runtime quality does not guarantee best offline
+Precision@5. Evidence and scores are recorded for auditing this disagreement.

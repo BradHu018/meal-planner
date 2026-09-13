@@ -1,13 +1,13 @@
 import ast
 import csv
 from functools import lru_cache
-from pathlib import Path
+from rag.config import RECIPE_FILE
 
 
 @lru_cache(maxsize=1)
 def recipe_ingredients():
     """Read exact ingredient lists by ID; compatible with the existing index."""
-    path = Path(__file__).resolve().parents[1] / "data/recipes/recipes_rag.csv"
+    path = RECIPE_FILE
     with path.open(newline="", encoding="utf-8") as source:
         return {
             row["id"]: ast.literal_eval(row["ingredients"])
