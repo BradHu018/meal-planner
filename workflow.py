@@ -42,6 +42,7 @@ from data.nutrition import (
     scale_recipe_to_targets,
 )
 from data.prices import calculate_recipe_cost
+from data.grocery_pricing import price_selected_grocery_list
 
 from pydantic import BaseModel, Field 
 from langchain.chat_models import init_chat_model
@@ -273,6 +274,10 @@ class MealPlanState(TypedDict):
     weekly_plan: list[dict]
     grocery_list: list[dict]
     estimated_total: float
+    consumption_total: float
+    estimated_total_complete: bool
+    pricing_audit: list[dict]
+    missing_prices: list[str]
 
     # critic 
     critic_feedback: str
@@ -810,6 +815,18 @@ def calculate_selected_total(
 
     return round(total, 2)
 
+
+def selected_grocery_pricing_node(state: MealPlanState):
+    """Price only the selected, aggregated groceries.
+
+    Candidate-level costs from ``budget_agent`` remain available to the
+    optimizer. This node is the authoritative final package/unit-price result.
+    It has no LLM decision point: the deterministic pricing function tries
+    StatsCan first and invokes MCP only after a local miss.
+    """
+    pricing = price_selected_grocery_list(state["grocery_list"])
+    return pricing
+
 # optimizes the weekly recipes based on the taste, cost, and balance analysis
 def optimizer_node(state: MealPlanState):
 
@@ -966,8 +983,11 @@ Use only exact recipe names from the candidate recipe list.
 # in the case that the food is not provided per 100g this gets the missing prices of those items
 def get_selected_missing_prices(
     weekly_plan,
-    budget_analysis
+    budget_analysis,
+    selected_pricing=None,
 ):
+    if selected_pricing is not None:
+        return selected_pricing.get("missing_prices", [])
     recipe_costs = budget_analysis[
         "recipe_cost"
     ]
@@ -1074,12 +1094,12 @@ def critic_node(state: MealPlanState):
 
     # 5. Missing price information
 
-    missing_prices = (
-        get_selected_missing_prices(
+    missing_prices = state.get("missing_prices", [])
+    if not missing_prices and not state.get("estimated_total_complete", False):
+        missing_prices = get_selected_missing_prices(
             weekly_plan,
             state["budget_analysis"]
         )
-    )
 
     if missing_prices:
 
@@ -1087,6 +1107,12 @@ def critic_node(state: MealPlanState):
             "The grocery price estimate is incomplete because "
             "prices are missing for: "
             + ", ".join(missing_prices)
+        )
+
+    if not state.get("estimated_total_complete", False):
+        warnings.append(
+            "The checkout-cost estimate is incomplete; unresolved ingredients "
+            "do not contribute a zero price."
         )
 
     # 6. Gemini soft-quality review
@@ -1471,6 +1497,18 @@ def finalize_node(state):
             "estimated_total":
                 state["estimated_total"],
 
+            "consumption_total":
+                state["consumption_total"],
+
+            "estimated_total_complete":
+                state["estimated_total_complete"],
+
+            "pricing_audit":
+                state["pricing_audit"],
+
+            "missing_prices":
+                state["missing_prices"],
+
             "weekly_budget":
                 state["weekly_budget"],
 
@@ -1523,6 +1561,7 @@ builder.add_node("budget", budget_agent)
 builder.add_node("balance", meal_balance_agent)
 
 builder.add_node("optimizer", optimizer_node)
+builder.add_node("selected_grocery_pricing", selected_grocery_pricing_node)
 builder.add_node("critic", critic_node)
 builder.add_node("revision", revision_node)
 builder.add_node("finalize", finalize_node)
@@ -1562,6 +1601,11 @@ builder.add_edge(
 # builder.add_edge("optimizer", "critic")
 builder.add_edge(
     "optimizer",
+    "selected_grocery_pricing"
+)
+
+builder.add_edge(
+    "selected_grocery_pricing",
     "save_pre_critic_state"
 )
 
@@ -1579,7 +1623,7 @@ builder.add_conditional_edges(
     }
 )
 
-builder.add_edge("revision", "critic")
+builder.add_edge("revision", "selected_grocery_pricing")
 builder.add_edge("finalize", END)
 
 

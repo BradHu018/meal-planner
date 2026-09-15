@@ -63,6 +63,10 @@ initial_state = {
     "weekly_plan": [],
     "grocery_list": [],
     "estimated_total": 0,
+    "consumption_total": 0,
+    "estimated_total_complete": False,
+    "pricing_audit": [],
+    "missing_prices": [],
 
     "critic_feedback": "",
     "approved": False,
