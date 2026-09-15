@@ -258,12 +258,33 @@ A few things I'm still working on:
 - grocery prices are still missing for some ingredients
 - vector similarity does not always rank the best recipes near the top
 
-## Next steps
+## Grocery Pricing with MCP
 
-- MCP grocery price lookup for unresolved ingredients
-- better package-level grocery cost estimation
-- improve ingredient normalization
-- possibly experiment with hybrid lexical + vector retrieval
+The project now includes an **MCP-based grocery pricing fallback** for ingredients that cannot be resolved using the local Statistics Canada price dataset.
+
+The pricing flow is:
+
+```text
+Selected meals
+    ↓
+Aggregate grocery ingredients
+    ↓
+Try Statistics Canada pricing
+    ↓
+price found?
+ ┌───────────────┴───────────────┐
+ yes                             no
+  ↓                               ↓
+use local price              MCP client
+                                  ↓
+                              MCP server
+                                  ↓
+                        external grocery provider
+                                  ↓
+                         package-level quote
+ └───────────────────────┬───────────────
+                         ↓
+              deterministic Python pricing
 
 ## Data sources
 
